@@ -1,0 +1,14 @@
+# Backend
+backend/venv/
+backend/.env
+backend/__pycache__/
+backend/*.pyc
+backend/skillpath.db
+
+# Frontend
+frontend/node_modules/
+frontend/.env
+
+# General
+.env
+__pycache__/
