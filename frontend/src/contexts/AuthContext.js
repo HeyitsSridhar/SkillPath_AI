@@ -3,7 +3,7 @@ import axios from 'axios';
 
 const AuthContext = createContext(null);
 
-const API_URL = process.env.REACT_APP_BACKEND_URL;
+const API_URL = process.env.REACT_APP_BACKEND_URL || 'http://localhost:8000';
 
 export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
@@ -68,7 +68,6 @@ export const AuthProvider = ({ children }) => {
       axios.defaults.headers.common['Authorization'] = `Bearer ${access_token}`;
       return { success: true, user: newUser };
     } catch (error) {
-      console.error('Registration error:', error);
       // Handle validation errors from FastAPI
       if (error.response?.data?.detail) {
         if (Array.isArray(error.response.data.detail)) {

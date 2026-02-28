@@ -30,17 +30,24 @@ load_dotenv(ROOT_DIR / '.env')
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup: Initialize the database
+    logger.info("Starting SkillPath AI backend...")
     try:
         await init_db()
-        logger.info("Database initialized successfully")
+        logger.info("Application startup completed successfully")
     except Exception as e:
-        logger.error(f"Error initializing database: {e}")
-        raise
+        logger.error(f"Fatal error during startup: {e}")
+        # Don't raise here to allow the app to start, but log the error
+        # The database will be initialized on first request if needed
     
     yield
     
     # Shutdown: Clean up resources
-    await engine.dispose()
+    logger.info("Shutting down SkillPath AI backend...")
+    try:
+        await engine.dispose()
+        logger.info("Database engine disposed successfully")
+    except Exception as e:
+        logger.error(f"Error during shutdown: {e}")
 
 app = FastAPI(title="SkillPath AI", lifespan=lifespan)
 
@@ -839,22 +846,90 @@ Dedicate {time} to structured learning with regular practice sessions.
 Happy Learning! 🚀
 """
 
+# Database backup endpoints
+@api_router.post("/admin/backup")
+async def backup_database(current_admin: User = Depends(get_admin_user)):
+    """Create database backup (admin only)"""
+    try:
+        from backup_db import create_backup
+        result = await create_backup()
+        return result
+    except Exception as e:
+        logger.error(f"Backup endpoint error: {e}")
+        raise HTTPException(status_code=500, detail=f"Backup failed: {str(e)}")
+
+@api_router.get("/admin/backups")
+async def list_backups(current_admin: User = Depends(get_admin_user)):
+    """List available database backups (admin only)"""
+    try:
+        backup_dir = Path(__file__).parent / "backups"
+        if not backup_dir.exists():
+            return {"backups": []}
+        
+        backups = []
+        for backup_file in backup_dir.glob("skillpath_backup_*.db"):
+            stat = backup_file.stat()
+            backups.append({
+                "filename": backup_file.name,
+                "size": stat.st_size,
+                "created": datetime.fromtimestamp(stat.st_ctime).isoformat()
+            })
+        
+        # Sort by creation time (newest first)
+        backups.sort(key=lambda x: x["created"], reverse=True)
+        
+        return {"backups": backups}
+        
+    except Exception as e:
+        logger.error(f"List backups error: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to list backups: {str(e)}")
+
 # Health check
 @api_router.get("/health")
 async def health_check():
+    """Enhanced health check with database connectivity"""
+    try:
+        # Test database connectivity
+        async with AsyncSessionLocal() as session:
+            from sqlalchemy import select
+            from models import User
+            result = await session.execute(select(User).limit(1))
+            db_status = "connected"
+            user_count = len(result.all())
+    except Exception as e:
+        logger.error(f"Database health check failed: {e}")
+        db_status = "disconnected"
+        user_count = 0
+    
+    from datetime import datetime, timezone
     return {
         "status": "healthy",
         "service": "skillpath-ai-backend",
-        "version": "1.0.0"
+        "version": "1.0.0",
+        "database": {
+            "status": db_status,
+            "user_count": user_count
+        },
+        "timestamp": datetime.now(timezone.utc).isoformat()
     }
 
 # Include the router in the main app
 app.include_router(api_router)
 
-# CORS middleware
+# CORS middleware - Allow production frontend URL
+allowed_origins = [
+    "http://localhost:3000", 
+    "http://127.0.0.1:3000"
+]
+
+# Add production frontend URL from environment variable
+frontend_url = os.getenv("FRONTEND_URL")
+if frontend_url:
+    allowed_origins.append(frontend_url)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -899,3 +974,15 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
             yield session
         finally:
             await session.close()
+
+# Run the server
+if __name__ == "__main__":
+    import uvicorn
+    
+    # Get port from environment variable or default to 8000
+    port = int(os.getenv("PORT", 8000))
+    
+    # Get host from environment variable or default to 0.0.0.0 for production
+    host = os.getenv("HOST", "0.0.0.0")
+    
+    uvicorn.run(app, host=host, port=port)

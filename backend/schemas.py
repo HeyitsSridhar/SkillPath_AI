@@ -9,8 +9,7 @@ class UserBase(BaseModel):
     full_name: Optional[str] = None
 
 class UserCreate(UserBase):
-    password: str = Field(..., min_length=8, max_length=72, 
-                         pattern=r"^[A-Za-z\d@$!%*?&]{8,72}$")
+    password: str = Field(..., min_length=6, max_length=72)
     role: Optional[str] = "user"
     
     class Config:

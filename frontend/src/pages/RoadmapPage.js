@@ -4,7 +4,7 @@ import axios from 'axios';
 import { ChevronRight, ChevronLeft, Book, Clock } from 'lucide-react';
 import Markdown from 'react-markdown';
 
-const API_URL = process.env.REACT_APP_BACKEND_URL;
+const API_URL = process.env.REACT_APP_BACKEND_URL || 'http://localhost:8000';
 
 const RoadmapPage = () => {
   const { topic } = useParams();

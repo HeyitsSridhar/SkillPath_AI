@@ -30,7 +30,8 @@ const Auth = () => {
           email: formData.email,
           password: formData.password,
           username: formData.username,
-          full_name: formData.full_name || formData.username
+          full_name: formData.full_name || formData.username,
+          role: 'user'
         });
       }
 
@@ -42,28 +43,14 @@ const Auth = () => {
           navigate('/dashboard');
         }
       } else {
-        // Handle Pydantic validation errors
-        if (result.error && typeof result.error === 'object') {
-          // If it's a Pydantic error object, extract the message
-          if (result.error.msg) {
-            setError(result.error.msg);
-          } else if (Array.isArray(result.error.detail)) {
-            // Handle array of validation errors
-            setError(result.error.detail.map(err => err.msg).join('\n'));
-          } else if (result.error.detail) {
-            // Handle single validation error
-            setError(result.error.detail);
-          } else {
-            // Fallback to string representation
-            setError(JSON.stringify(result.error));
-          }
+        // Handle authentication errors
+        if (result.error) {
+          setError(result.error);
         } else {
-          // Regular error message
-          setError(result.error || 'An error occurred');
+          setError('Registration failed. Please try again.');
         }
       }
     } catch (err) {
-      console.error('Authentication error:', err);
       if (err.response?.data) {
         if (Array.isArray(err.response.data.detail)) {
           setError(err.response.data.detail.map(d => d.msg).join('\n'));

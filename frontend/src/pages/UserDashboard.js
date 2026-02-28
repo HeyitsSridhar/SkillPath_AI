@@ -23,7 +23,7 @@ ChartJS.register(
   Legend
 );
 
-const API_URL = process.env.REACT_APP_BACKEND_URL;
+const API_URL = process.env.REACT_APP_BACKEND_URL || 'http://localhost:8000';
 
 const UserDashboard = () => {
   const { user, logout } = useAuth();

@@ -47,7 +47,10 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
-# Database
+# Database (except skillpath.db which we want to track for data persistence)
 *.db
 *.sqlite
 *.sqlite3
+
+# Exception: Allow skillpath.db to be tracked for persistent data
+!backend/skillpath.db
