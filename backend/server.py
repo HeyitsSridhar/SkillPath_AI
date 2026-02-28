@@ -50,12 +50,16 @@ async def lifespan(app: FastAPI):
         logger.error(f"Error during shutdown: {e}")
 
 app = FastAPI(title="SkillPath AI", lifespan=lifespan)
+app = FastAPI(title="SkillPath AI", lifespan=lifespan)
+
+from fastapi.middleware.cors import CORSMiddleware
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "https://skillpath-ai-frontend.vercel.app",  # replace with your real Vercel URL
-        "http://localhost:3000"
+        "https://skillpath-ai-frontend.vercel.app",
     ],
+    allow_origin_regex=r"https://.*\.vercel\.app",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
