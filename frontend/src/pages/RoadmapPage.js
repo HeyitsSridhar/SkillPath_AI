@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import axios from "axios";
 import { ChevronRight, ChevronLeft, Book, Clock } from "lucide-react";
-import ReactMarkdown from "react-markdown";
+import Markdown from "react-markdown";
 
 const API_URL =
   process.env.REACT_APP_BACKEND_URL || "http://localhost:8000";
@@ -34,6 +34,7 @@ const RoadmapPage = () => {
       const response = await axios.get(
         API_URL + "/api/roadmap/" + encodeURIComponent(topic)
       );
+
       setRoadmapData(response.data);
     } catch (error) {
       console.error("Failed to load roadmap", error);
@@ -76,7 +77,7 @@ const RoadmapPage = () => {
         }
       );
 
-      setResources(response.data.resources || JSON.stringify(response.data));
+      setResources(response.data.resources);
     } catch (error) {
       console.error("Failed to generate resources", error);
       alert("Failed to generate resources");
@@ -88,20 +89,21 @@ const RoadmapPage = () => {
   if (loading || !roadmapData) {
     return (
       <div className="flex items-center justify-center min-h-screen">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-purple-600"></div>
+        Loading...
       </div>
     );
   }
 
-  // ✅ IMPORTANT FIX HERE
-  const weekKeys = Object.keys(roadmapData.roadmap_data || {}).sort(
-    (a, b) => parseInt(a.split(" ")[1]) - parseInt(b.split(" ")[1])
-  );
+  const weekKeys = Object.keys(roadmapData).sort((a, b) => {
+    const numA = parseInt(a.split(" ")[1]);
+    const numB = parseInt(b.split(" ")[1]);
+    return numA - numB;
+  });
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100">
+    <div className="min-h-screen bg-gray-50">
       {/* Header */}
-      <header className="bg-white shadow-sm border-b border-slate-200">
+      <header className="bg-white shadow-sm border-b">
         <div className="max-w-6xl mx-auto px-4 py-4 flex items-center gap-4">
           <button
             onClick={() => navigate("/dashboard")}
@@ -111,28 +113,27 @@ const RoadmapPage = () => {
           </button>
 
           <div>
-            <h1 className="text-2xl font-bold text-gray-800">{topic}</h1>
-            <p className="text-sm text-gray-600 capitalize">
-              {roadmapData.knowledge_level} • {roadmapData.time}
+            <h1 className="text-2xl font-bold">{topic}</h1>
+            <p className="text-sm text-gray-600">
+              Learning Roadmap
             </p>
           </div>
         </div>
       </header>
 
       {/* Weeks */}
-      <div className="max-w-6xl mx-auto px-4 py-8 space-y-4">
+      <div className="max-w-6xl mx-auto px-4 py-8 space-y-6">
         {weekKeys.map((weekKey, weekIndex) => {
-          // ✅ IMPORTANT FIX HERE
-          const week = roadmapData.roadmap_data[weekKey];
+          const week = roadmapData[weekKey];
 
           return (
             <div
               key={weekKey}
-              className="bg-white rounded-2xl shadow-md overflow-hidden"
+              className="bg-white rounded-xl shadow-md overflow-hidden"
             >
               <button
                 onClick={() => toggleWeek(weekKey)}
-                className="w-full p-6 flex items-center justify-between hover:bg-gray-50"
+                className="w-full p-6 flex justify-between items-center"
                 style={{
                   borderLeft:
                     "6px solid " + colors[weekIndex % colors.length],
@@ -142,7 +143,7 @@ const RoadmapPage = () => {
                   <h3 className="text-lg font-medium text-gray-600">
                     {weekKey}
                   </h3>
-                  <h2 className="text-2xl font-bold text-gray-800">
+                  <h2 className="text-xl font-bold">
                     {week.topic}
                   </h2>
                 </div>
@@ -158,39 +159,38 @@ const RoadmapPage = () => {
               </button>
 
               {openWeeks[weekKey] && (
-                <div className="border-t border-gray-200 divide-y divide-gray-200">
-                  {(week.subtopics || []).map((subtopic, index) => (
-                    <div key={index} className="p-6 hover:bg-gray-50">
-                      <div className="flex gap-4">
-                        <div className="w-12 h-12 bg-purple-600 text-white rounded-full flex items-center justify-center font-bold">
-                          {index + 1}
+                <div className="border-t divide-y">
+                  {(week.subtopics || []).map(
+                    (subtopic, index) => (
+                      <div
+                        key={index}
+                        className="p-6 hover:bg-gray-50"
+                      >
+                        <h3 className="font-bold text-lg mb-2">
+                          {index + 1}. {subtopic.subtopic}
+                        </h3>
+
+                        <div className="flex items-center gap-2 text-sm text-gray-600 mb-2">
+                          <Clock size={16} />
+                          {subtopic.time}
                         </div>
 
-                        <div className="flex-1">
-                          <h3 className="text-xl font-bold text-gray-800 mb-2">
-                            {subtopic.subtopic}
-                          </h3>
+                        <p className="text-gray-700 mb-4">
+                          {subtopic.description}
+                        </p>
 
-                          <div className="flex items-center gap-2 text-sm text-gray-600 mb-2">
-                            <Clock size={16} />
-                            {subtopic.time}
-                          </div>
-
-                          <p className="text-gray-600 mb-4">
-                            {subtopic.description}
-                          </p>
-
-                          <button
-                            onClick={() => openResources(subtopic)}
-                            className="px-4 py-2 bg-blue-100 text-blue-700 rounded-lg"
-                          >
-                            <Book size={16} className="inline mr-2" />
-                            Resources
-                          </button>
-                        </div>
+                        <button
+                          onClick={() =>
+                            openResources(subtopic)
+                          }
+                          className="px-4 py-2 bg-blue-100 text-blue-700 rounded-lg"
+                        >
+                          <Book size={16} className="inline mr-2" />
+                          Resources
+                        </button>
                       </div>
-                    </div>
-                  ))}
+                    )
+                  )}
                 </div>
               )}
             </div>
@@ -198,22 +198,20 @@ const RoadmapPage = () => {
         })}
       </div>
 
-      {/* Resource Modal */}
+      {/* Resources Modal */}
       {showResourceModal && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl max-w-3xl w-full max-h-screen overflow-y-auto">
-            <div className="p-6 border-b">
-              <div className="flex justify-between">
-                <h2 className="text-xl font-bold">
-                  {currentSubtopic?.subtopic}
-                </h2>
-                <button
-                  onClick={() => setShowResourceModal(false)}
-                  className="text-2xl"
-                >
-                  ×
-                </button>
-              </div>
+          <div className="bg-white rounded-xl max-w-3xl w-full max-h-[80vh] overflow-y-auto">
+            <div className="p-6 border-b flex justify-between">
+              <h2 className="font-bold text-lg">
+                {currentSubtopic?.subtopic}
+              </h2>
+              <button
+                onClick={() => setShowResourceModal(false)}
+                className="text-xl"
+              >
+                ×
+              </button>
             </div>
 
             <div className="p-6">
@@ -229,7 +227,7 @@ const RoadmapPage = () => {
                 </button>
               ) : (
                 <div className="prose">
-                  <ReactMarkdown>{resources}</ReactMarkdown>
+                  <Markdown>{resources}</Markdown>
                 </div>
               )}
             </div>
