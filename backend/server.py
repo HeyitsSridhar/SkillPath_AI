@@ -1,22 +1,22 @@
+import os
+import json
+import re
+from datetime import datetime, timedelta, timezone
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, APIRouter, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_
-from contextlib import asynccontextmanager
-from datetime import datetime, timezone, timedelta
+from sqlalchemy import select, and_, func
 from dotenv import load_dotenv
 from groq import Groq
-import os
-import json
 
 from database import get_db, init_db, engine
-from models import User, Roadmap
+from models import User, Roadmap, QuizStat
 from schemas import *
 from auth import *
 
 load_dotenv()
-
-# ===================== LIFESPAN =====================
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -25,8 +25,6 @@ async def lifespan(app: FastAPI):
     await engine.dispose()
 
 app = FastAPI(title="SkillPath AI", lifespan=lifespan)
-
-# ===================== CORS =====================
 
 app.add_middleware(
     CORSMiddleware,
@@ -38,7 +36,7 @@ app.add_middleware(
 
 api_router = APIRouter(prefix="/api")
 
-# ===================== AUTH =====================
+# ================= AUTH =================
 
 @api_router.post("/auth/register", response_model=Token)
 async def register(user_data: UserCreate, db: AsyncSession = Depends(get_db)):
@@ -59,17 +57,16 @@ async def register(user_data: UserCreate, db: AsyncSession = Depends(get_db)):
     await db.commit()
     await db.refresh(new_user)
 
-    access_token = create_access_token(
+    token = create_access_token(
         data={"sub": new_user.email},
         expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES),
     )
 
     return Token(
-        access_token=access_token,
+        access_token=token,
         token_type="bearer",
         user=UserResponse.model_validate(new_user),
     )
-
 
 @api_router.post("/auth/login", response_model=Token)
 async def login(credentials: UserLogin, db: AsyncSession = Depends(get_db)):
@@ -79,23 +76,22 @@ async def login(credentials: UserLogin, db: AsyncSession = Depends(get_db)):
     if not user or not verify_password(credentials.password, user.hashed_password):
         raise HTTPException(status_code=401, detail="Incorrect email or password")
 
-    access_token = create_access_token(
+    token = create_access_token(
         data={"sub": user.email},
         expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES),
     )
 
     return Token(
-        access_token=access_token,
+        access_token=token,
         token_type="bearer",
         user=UserResponse.model_validate(user),
     )
-
 
 @api_router.get("/auth/me", response_model=UserResponse)
 async def get_me(current_user: User = Depends(get_current_user)):
     return UserResponse.model_validate(current_user)
 
-# ===================== ROADMAP =====================
+# ================= ROADMAP =================
 
 @api_router.post("/roadmap")
 async def create_roadmap(
@@ -119,13 +115,11 @@ async def create_roadmap(
 
     db.add(new_roadmap)
     await db.commit()
-    await db.refresh(new_roadmap)
 
     return roadmap_structure
 
-
 @api_router.get("/roadmap/{topic}")
-async def get_roadmap_by_topic(
+async def get_roadmap(
     topic: str,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -136,150 +130,205 @@ async def get_roadmap_by_topic(
         )
     )
     roadmap = result.scalars().first()
-
     if not roadmap:
         raise HTTPException(status_code=404, detail="Roadmap not found")
 
     return roadmap.roadmap_data
 
+@api_router.get("/roadmaps")
+async def get_roadmaps(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(select(Roadmap).filter(Roadmap.user_id == current_user.id))
+    roadmaps = result.scalars().all()
 
-# ===================== GENERATE RESOURCES =====================
-
-@api_router.post("/generate-resources")
-async def generate_resources(data: dict):
-    try:
-        client = Groq(api_key=os.getenv("GROQ_API_KEY"))
-
-        prompt = f"""
-        Generate study resources in markdown format for:
-        Course: {data.get("course")}
-        Description: {data.get("description")}
-        Time: {data.get("time")}
-        """
-
-        response = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=[{"role": "user", "content": prompt}],
-        )
-
-        content = response.choices[0].message.content.strip()
-        return {"resources": content}
-
-    except Exception:
-        return {
-            "resources": """
-### Study Resources
-
-- 📘 Read official documentation
-- 🎥 Watch YouTube tutorials
-- 🧠 Practice problems
-- 💻 Build small projects
-"""
+    return [
+        {
+            "topic": r.topic,
+            "time": r.time,
+            "knowledge_level": r.knowledge_level,
+            "created_at": r.created_at,
         }
+        for r in roadmaps
+    ]
 
-
-# ===================== QUIZ =====================
+# ================= QUIZ =================
 
 @api_router.post("/quiz")
-async def generate_quiz(data: dict):
-    try:
-        client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+async def generate_quiz(request: QuizRequest):
+    client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
-        prompt = f"""
-        Generate 5 MCQ questions in JSON format for:
-        Course: {data.get("course")}
-        Topic: {data.get("topic")}
+    prompt = f"""
+Generate 5 MCQ questions for:
+Course: {request.course}
+Topic: {request.topic}
+Subtopic: {request.subtopic}
 
-        Format:
-        [
-          {{
-            "question": "...",
-            "options": ["A","B","C","D"],
-            "answer": "correct option"
-          }}
-        ]
-        """
+Return JSON:
+[
+  {{
+    "question": "...",
+    "options": ["A","B","C","D"],
+    "answer": "A"
+  }}
+]
+"""
 
-        response = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=[{"role": "user", "content": prompt}],
+    response = client.chat.completions.create(
+        model="llama-3.3-70b-versatile",
+        messages=[{"role": "user", "content": prompt}],
+    )
+
+    content = response.choices[0].message.content.strip()
+    if content.startswith("```"):
+        content = content.replace("```json", "").replace("```", "").strip()
+
+    return json.loads(content)
+
+@api_router.get("/quiz/stats/{topic}")
+async def quiz_stats(
+    topic: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(QuizStat).filter(
+            and_(QuizStat.user_id == current_user.id, QuizStat.topic == topic)
         )
+    )
+    stats = result.scalars().all()
 
-        content = response.choices[0].message.content.strip()
+    return [
+        {
+            "week": s.week_num,
+            "subtopic": s.subtopic_num,
+            "score": s.num_correct,
+            "total": s.num_questions,
+        }
+        for s in stats
+    ]
 
-        if content.startswith("```"):
-            content = content.replace("```json", "").replace("```", "").strip()
+# ================= DASHBOARD =================
 
-        return json.loads(content)
+@api_router.get("/dashboard/stats")
+async def dashboard(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    roadmap_count = await db.scalar(
+        select(func.count()).select_from(Roadmap).filter(Roadmap.user_id == current_user.id)
+    )
 
-    except Exception:
-        return [
-            {
-                "question": "What is an array?",
-                "options": [
-                    "Collection of elements",
-                    "Database",
-                    "Loop",
-                    "Sorting algorithm",
-                ],
-                "answer": "Collection of elements",
-            }
-        ]
+    quiz_count = await db.scalar(
+        select(func.count()).select_from(QuizStat).filter(QuizStat.user_id == current_user.id)
+    )
 
+    return {
+        "total_courses": roadmap_count or 0,
+        "completed_quizzes": quiz_count or 0,
+        "hardness_index": current_user.hardness_index or 1.0,
+    }
 
-# ===================== AI ROADMAP =====================
+# ================= ADMIN =================
+
+@api_router.get("/admin/dashboard")
+async def admin_dashboard(
+    current_admin: User = Depends(get_admin_user),
+    db: AsyncSession = Depends(get_db),
+):
+    total_users = await db.scalar(select(func.count()).select_from(User))
+    total_roadmaps = await db.scalar(select(func.count()).select_from(Roadmap))
+
+    return {
+        "total_users": total_users or 0,
+        "total_roadmaps": total_roadmaps or 0,
+    }
+
+@api_router.get("/admin/users")
+async def get_users(
+    current_admin: User = Depends(get_admin_user),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(select(User))
+    users = result.scalars().all()
+
+    return [
+        {
+            "id": u.id,
+            "email": u.email,
+            "username": u.username,
+            "role": u.role,
+            "is_active": u.is_active,
+        }
+        for u in users
+    ]
+
+# ================= RESOURCES =================
+
+@api_router.post("/generate-resources")
+async def generate_resources(request: ResourceRequest):
+    client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+
+    prompt = f"""
+Generate learning resources for:
+Course: {request.course}
+Description: {request.description}
+Time: {request.time}
+"""
+
+    response = client.chat.completions.create(
+        model="llama-3.3-70b-versatile",
+        messages=[{"role": "user", "content": prompt}],
+    )
+
+    return {"resources": response.choices[0].message.content}
+
+# ================= ROADMAP AI =================
 
 async def generate_ai_roadmap(topic, time, level):
+    client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+
+    number = 4
+    match = re.search(r"\d+", time)
+    if match:
+        number = int(match.group())
+    if "month" in time.lower():
+        number *= 4
+
+    prompt = f"""
+Generate roadmap JSON.
+Topic: {topic}
+Level: {level}
+Weeks: {number}
+
+Format:
+{{
+  "Week 1": {{
+    "topic": "...",
+    "subtopics": [
+      {{
+        "subtopic": "...",
+        "description": "...",
+        "time": "2 hours"
+      }}
+    ]
+  }}
+}}
+"""
+
+    response = client.chat.completions.create(
+        model="llama-3.3-70b-versatile",
+        messages=[{"role": "user", "content": prompt}],
+    )
+
+    content = response.choices[0].message.content.strip()
+    if content.startswith("```"):
+        content = content.replace("```json", "").replace("```", "").strip()
+
     try:
-        client = Groq(api_key=os.getenv("GROQ_API_KEY"))
-
-        prompt = f"""
-        Generate structured roadmap JSON for {topic} at {level} level for {time}.
-
-        Format:
-        {{
-          "title": "...",
-          "duration": "...",
-          "weeks": [
-            {{
-              "week": 1,
-              "topic": "...",
-              "subtopics": [
-                {{
-                  "subtopic": "...",
-                  "description": "...",
-                  "time": "..."
-                }}
-              ]
-            }}
-          ]
-        }}
-        """
-
-        response = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=[{"role": "user", "content": prompt}],
-        )
-
-        content = response.choices[0].message.content.strip()
-
-        if content.startswith("```"):
-            content = content.replace("```json", "").replace("```", "").strip()
-
-        data = json.loads(content)
-
-        # 🔥 Normalize structure for frontend
-        roadmap_dict = {}
-
-        for week in data.get("weeks", []):
-            roadmap_dict[f"Week {week['week']}"] = {
-                "topic": week.get("topic"),
-                "subtopics": week.get("subtopics", []),
-            }
-
-        return roadmap_dict
-
-    except Exception:
+        return json.loads(content)
+    except:
         return {
             "Week 1": {
                 "topic": "Introduction",
@@ -293,16 +342,12 @@ async def generate_ai_roadmap(topic, time, level):
             }
         }
 
-
-# ===================== HEALTH =====================
-
 @api_router.get("/health")
 async def health():
     return {
         "status": "healthy",
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
-
 
 app.include_router(api_router)
 
