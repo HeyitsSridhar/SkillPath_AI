@@ -2,8 +2,8 @@ from fastapi import FastAPI, APIRouter, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_
-from typing import Dict, Any
 import os
+import json
 from datetime import timedelta, datetime, timezone
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
@@ -130,7 +130,6 @@ async def create_roadmap(
     return roadmap_structure
 
 
-# ✅ THIS FIXES YOUR 404 ERROR
 @api_router.get("/roadmap/{topic}")
 async def get_roadmap_by_topic(
     topic: str,
@@ -175,14 +174,53 @@ async def health():
 async def generate_ai_roadmap(topic, time, level):
     try:
         client = Groq(api_key=os.getenv("GROQ_API_KEY"))
-        prompt = f"Generate roadmap for {topic} at {level} level for {time}."
+
+        prompt = f"""
+        Generate a structured learning roadmap for "{topic}" at {level} level for {time}.
+
+        Return ONLY valid JSON in this format:
+
+        {{
+            "Week 1": {{
+                "topic": "Introduction",
+                "subtopics": [
+                    {{
+                        "subtopic": "Basics",
+                        "description": "What you will learn",
+                        "time": "2 hours"
+                    }}
+                ]
+            }}
+        }}
+        """
+
         response = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[{"role": "user", "content": prompt}],
         )
-        return {"roadmap": response.choices[0].message.content}
-    except:
-        return {"roadmap": "Sample roadmap generated."}
+
+        content = response.choices[0].message.content.strip()
+
+        if content.startswith("```"):
+            content = content.replace("```json", "").replace("```", "").strip()
+
+        return json.loads(content)
+
+    except Exception as e:
+        print("AI error:", e)
+
+        return {
+            "Week 1": {
+                "topic": "Introduction",
+                "subtopics": [
+                    {
+                        "subtopic": "Basics",
+                        "description": "Learn fundamentals",
+                        "time": "2 hours"
+                    }
+                ]
+            }
+        }
 
 # ===================== INCLUDE ROUTER =====================
 
