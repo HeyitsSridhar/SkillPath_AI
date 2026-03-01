@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../contexts/AuthContext";
 import axios from "axios";
-import { Plus, LogOut, Settings } from "lucide-react";
+import { Plus, LogOut } from "lucide-react";
 import { Bar } from "react-chartjs-2";
 import {
   Chart as ChartJS,
@@ -35,11 +35,10 @@ const UserDashboard = () => {
     try {
       const statsRes = await axios.get(API_URL + "/api/dashboard/stats");
       const roadmapRes = await axios.get(API_URL + "/api/roadmaps");
-
       setStats(statsRes.data);
       setRoadmaps(roadmapRes.data);
     } catch (err) {
-      console.error("Dashboard error:", err);
+      console.error(err);
     } finally {
       setLoading(false);
     }
@@ -73,18 +72,18 @@ const UserDashboard = () => {
       : null;
 
   return (
-    <div className="min-h-screen bg-gray-50">
+    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100">
       {/* Header */}
-      <header className="bg-white shadow-sm border-b">
+      <header className="bg-white shadow-sm border-b border-slate-200">
         <div className="max-w-7xl mx-auto px-4 py-4 flex justify-between items-center">
           <h1 className="text-2xl font-bold text-purple-700">
             SkillPath AI
           </h1>
 
-          <div className="flex gap-3">
+          <div className="flex gap-4">
             <button
               onClick={() => navigate("/topic")}
-              className="px-4 py-2 bg-purple-600 text-white rounded-lg"
+              className="px-6 py-2 bg-gradient-to-r from-purple-600 to-blue-600 text-white rounded-xl font-semibold shadow-md hover:shadow-xl transition-all duration-200"
             >
               <Plus size={18} className="inline mr-2" />
               New Topic
@@ -92,7 +91,7 @@ const UserDashboard = () => {
 
             <button
               onClick={handleLogout}
-              className="px-4 py-2 bg-red-100 text-red-600 rounded-lg"
+              className="px-5 py-2 bg-red-100 text-red-600 rounded-xl font-medium hover:bg-red-200 transition"
             >
               <LogOut size={18} className="inline mr-2" />
               Logout
@@ -103,20 +102,18 @@ const UserDashboard = () => {
 
       <div className="max-w-7xl mx-auto px-4 py-8">
         {/* Profile */}
-        <div className="bg-white p-6 rounded-xl shadow mb-8">
+        <div className="bg-white p-6 rounded-2xl shadow-md mb-8">
           <h2 className="text-xl font-bold mb-2">
             {user?.full_name || user?.username}
           </h2>
           <p className="text-gray-600">{user?.email}</p>
 
-          <div className="flex gap-6 mt-4 text-sm">
+          <div className="flex gap-8 mt-4 text-sm">
             <div>
-              Courses:{" "}
-              <b>{stats?.total_courses || 0}</b>
+              Courses: <b>{stats?.total_courses || 0}</b>
             </div>
             <div>
-              Quizzes:{" "}
-              <b>{stats?.completed_quizzes || 0}</b>
+              Quizzes: <b>{stats?.completed_quizzes || 0}</b>
             </div>
             <div>
               Hardness Index:{" "}
@@ -125,9 +122,9 @@ const UserDashboard = () => {
           </div>
         </div>
 
-        {/* Roadmaps */}
+        {/* Continue Learning */}
         {roadmaps.length > 0 && (
-          <div className="mb-8">
+          <div className="mb-10">
             <h2 className="text-xl font-bold mb-4">
               Continue Learning
             </h2>
@@ -139,11 +136,13 @@ const UserDashboard = () => {
                   onClick={() =>
                     navigate("/roadmap/" + encodeURIComponent(r.topic))
                   }
-                  className="bg-white p-6 rounded-xl shadow cursor-pointer hover:shadow-lg"
+                  className="bg-white p-6 rounded-2xl shadow-md cursor-pointer hover:shadow-xl transition-all duration-200"
                 >
                   <h3 className="font-bold text-lg">{r.topic}</h3>
-                  <p className="text-sm text-gray-500">{r.time}</p>
-                  <p className="text-sm capitalize text-gray-600">
+                  <p className="text-sm text-gray-500 mt-1">
+                    {r.time}
+                  </p>
+                  <p className="text-sm text-gray-600 capitalize">
                     {r.knowledge_level}
                   </p>
                 </div>
@@ -154,8 +153,8 @@ const UserDashboard = () => {
 
         {/* Chart */}
         {chartData && (
-          <div className="bg-white p-6 rounded-xl shadow">
-            <h2 className="text-xl font-bold mb-4">
+          <div className="bg-white p-6 rounded-2xl shadow-md">
+            <h2 className="text-xl font-bold mb-6">
               Progress Overview
             </h2>
 
@@ -165,9 +164,7 @@ const UserDashboard = () => {
                 options={{
                   maintainAspectRatio: false,
                   plugins: { legend: { display: false } },
-                  scales: {
-                    y: { beginAtZero: true },
-                  },
+                  scales: { y: { beginAtZero: true } },
                 }}
               />
             </div>
