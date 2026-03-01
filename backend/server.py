@@ -1,7 +1,7 @@
 from fastapi import FastAPI, APIRouter, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_
+from sqlalchemy import select, and_, func
 import os
 import json
 from datetime import timedelta, datetime, timezone
@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 from groq import Groq
 
 from database import get_db, init_db, engine
-from models import User, Roadmap
+from models import User, Roadmap, QuizStat
 from schemas import *
 from auth import *
 
@@ -24,8 +24,6 @@ async def lifespan(app: FastAPI):
     yield
     await engine.dispose()
 
-# ===================== APP INIT =====================
-
 app = FastAPI(title="SkillPath AI", lifespan=lifespan)
 
 # ===================== CORS =====================
@@ -38,8 +36,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ===================== ROUTER =====================
-
 api_router = APIRouter(prefix="/api")
 
 # ===================== AUTH =====================
@@ -50,13 +46,11 @@ async def register(user_data: UserCreate, db: AsyncSession = Depends(get_db)):
     if result.scalars().first():
         raise HTTPException(status_code=400, detail="Email already registered")
 
-    hashed_password = get_password_hash(user_data.password)
-
     new_user = User(
         email=user_data.email,
         username=user_data.username,
         full_name=user_data.full_name,
-        hashed_password=hashed_password,
+        hashed_password=get_password_hash(user_data.password),
         role=user_data.role,
         is_active=True
     )
@@ -148,17 +142,105 @@ async def get_roadmap_by_topic(
 
     return roadmap.roadmap_data
 
+
+@api_router.get("/roadmaps")
+async def get_user_roadmaps(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    result = await db.execute(select(Roadmap).filter(Roadmap.user_id == current_user.id))
+    roadmaps = result.scalars().all()
+
+    return [
+        {
+            "topic": rm.topic,
+            "time": rm.time,
+            "knowledge_level": rm.knowledge_level,
+            "created_at": rm.created_at
+        }
+        for rm in roadmaps
+    ]
+
 # ===================== QUIZ =====================
 
-@api_router.post("/quiz")
-async def generate_quiz(quiz_request: QuizRequest):
-    return {"quiz": "Quiz generated successfully"}
+@api_router.get("/quiz/stats/{topic}")
+async def get_quiz_stats(
+    topic: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    result = await db.execute(
+        select(QuizStat).filter(
+            and_(QuizStat.user_id == current_user.id, QuizStat.topic == topic)
+        )
+    )
+    stats = result.scalars().all()
 
-# ===================== RESOURCES =====================
+    return [
+        {
+            "week": s.week_num,
+            "subtopic": s.subtopic_num,
+            "score": s.num_correct,
+            "total": s.num_questions
+        }
+        for s in stats
+    ]
 
-@api_router.post("/generate-resources")
-async def generate_resources(resource_request: ResourceRequest):
-    return {"resources": "Resources generated successfully"}
+# ===================== DASHBOARD =====================
+
+@api_router.get("/dashboard/stats")
+async def dashboard_stats(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    roadmap_count = await db.scalar(
+        select(func.count()).select_from(Roadmap).filter(Roadmap.user_id == current_user.id)
+    )
+
+    quiz_count = await db.scalar(
+        select(func.count()).select_from(QuizStat).filter(QuizStat.user_id == current_user.id)
+    )
+
+    return {
+        "total_courses": roadmap_count or 0,
+        "completed_quizzes": quiz_count or 0,
+        "hardness_index": current_user.hardness_index
+    }
+
+# ===================== ADMIN =====================
+
+@api_router.get("/admin/dashboard")
+async def admin_dashboard(
+    current_admin: User = Depends(get_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    total_users = await db.scalar(select(func.count()).select_from(User))
+    total_roadmaps = await db.scalar(select(func.count()).select_from(Roadmap))
+
+    return {
+        "total_users": total_users or 0,
+        "total_roadmaps": total_roadmaps or 0
+    }
+
+
+@api_router.get("/admin/users")
+async def get_all_users(
+    current_admin: User = Depends(get_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    result = await db.execute(select(User))
+    users = result.scalars().all()
+
+    return [
+        {
+            "id": u.id,
+            "email": u.email,
+            "username": u.username,
+            "role": u.role,
+            "is_active": u.is_active
+        }
+        for u in users
+    ]
 
 # ===================== HEALTH =====================
 
@@ -176,22 +258,8 @@ async def generate_ai_roadmap(topic, time, level):
         client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
         prompt = f"""
-        Generate a structured learning roadmap for "{topic}" at {level} level for {time}.
-
-        Return ONLY valid JSON in this format:
-
-        {{
-            "Week 1": {{
-                "topic": "Introduction",
-                "subtopics": [
-                    {{
-                        "subtopic": "Basics",
-                        "description": "What you will learn",
-                        "time": "2 hours"
-                    }}
-                ]
-            }}
-        }}
+        Generate structured roadmap JSON for {topic} at {level} level for {time}.
+        Return ONLY valid JSON.
         """
 
         response = client.chat.completions.create(
@@ -206,9 +274,7 @@ async def generate_ai_roadmap(topic, time, level):
 
         return json.loads(content)
 
-    except Exception as e:
-        print("AI error:", e)
-
+    except Exception:
         return {
             "Week 1": {
                 "topic": "Introduction",
@@ -222,11 +288,7 @@ async def generate_ai_roadmap(topic, time, level):
             }
         }
 
-# ===================== INCLUDE ROUTER =====================
-
 app.include_router(api_router)
-
-# ===================== RUN =====================
 
 if __name__ == "__main__":
     import uvicorn
