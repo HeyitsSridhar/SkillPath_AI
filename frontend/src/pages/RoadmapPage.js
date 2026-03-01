@@ -1,241 +1,340 @@
-import { useState, useEffect, useCallback } from "react";
-import { useParams, useNavigate } from "react-router-dom";
-import axios from "axios";
-import { ChevronRight, ChevronLeft, Book, Clock } from "lucide-react";
-import Markdown from "react-markdown";
+from fastapi import FastAPI, APIRouter, Depends, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, and_
+from contextlib import asynccontextmanager
+from datetime import datetime, timezone, timedelta
+from dotenv import load_dotenv
+from groq import Groq
+import os
+import json
 
-const API_URL =
-  process.env.REACT_APP_BACKEND_URL || "http://localhost:8000";
+from database import get_db, init_db, engine
+from models import User, Roadmap
+from schemas import *
+from auth import *
 
-const RoadmapPage = () => {
-  const { topic } = useParams();
-  const navigate = useNavigate();
+load_dotenv()
 
-  const [roadmapData, setRoadmapData] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [openWeeks, setOpenWeeks] = useState({});
-  const [showResourceModal, setShowResourceModal] = useState(false);
-  const [currentSubtopic, setCurrentSubtopic] = useState(null);
-  const [resources, setResources] = useState(null);
-  const [loadingResources, setLoadingResources] = useState(false);
+# ==============================
+# Lifespan
+# ==============================
 
-  const colors = [
-    "#D14EC4",
-    "#4ED1B1",
-    "#D14E4E",
-    "#4EAAD1",
-    "#D1854E",
-    "#904ED1",
-    "#AFD14E",
-  ];
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await init_db()
+    yield
+    await engine.dispose()
 
-  const fetchRoadmap = useCallback(async () => {
-    try {
-      const response = await axios.get(
-        API_URL + "/api/roadmap/" + encodeURIComponent(topic)
-      );
+app = FastAPI(title="SkillPath AI", lifespan=lifespan)
 
-      setRoadmapData(response.data);
-    } catch (error) {
-      console.error("Failed to load roadmap", error);
-      alert("Failed to load roadmap");
-      navigate("/dashboard");
-    } finally {
-      setLoading(false);
-    }
-  }, [topic, navigate]);
+# ==============================
+# CORS
+# ==============================
 
-  useEffect(() => {
-    fetchRoadmap();
-  }, [fetchRoadmap]);
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-  const toggleWeek = (weekKey) => {
-    setOpenWeeks((prev) => ({
-      ...prev,
-      [weekKey]: !prev[weekKey],
-    }));
-  };
+api_router = APIRouter(prefix="/api")
 
-  const openResources = (subtopic) => {
-    setCurrentSubtopic(subtopic);
-    setShowResourceModal(true);
-    setResources(null);
-  };
+# ==============================
+# AUTH
+# ==============================
 
-  const generateResources = async () => {
-    if (!currentSubtopic) return;
+@api_router.post("/auth/register", response_model=Token)
+async def register(user_data: UserCreate, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(User).filter(User.email == user_data.email))
+    if result.scalars().first():
+        raise HTTPException(status_code=400, detail="Email already registered")
 
-    setLoadingResources(true);
+    new_user = User(
+        email=user_data.email,
+        username=user_data.username,
+        full_name=user_data.full_name,
+        hashed_password=get_password_hash(user_data.password),
+        role=user_data.role,
+        is_active=True,
+    )
 
-    try {
-      const response = await axios.post(
-        API_URL + "/api/generate-resources",
-        {
-          course: topic,
-          description: currentSubtopic.description,
-          time: currentSubtopic.time,
+    db.add(new_user)
+    await db.commit()
+    await db.refresh(new_user)
+
+    token = create_access_token(
+        data={"sub": new_user.email},
+        expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES),
+    )
+
+    return Token(
+        access_token=token,
+        token_type="bearer",
+        user=UserResponse.model_validate(new_user),
+    )
+
+
+@api_router.post("/auth/login", response_model=Token)
+async def login(credentials: UserLogin, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(User).filter(User.email == credentials.email))
+    user = result.scalars().first()
+
+    if not user or not verify_password(credentials.password, user.hashed_password):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    token = create_access_token(
+        data={"sub": user.email},
+        expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES),
+    )
+
+    return Token(
+        access_token=token,
+        token_type="bearer",
+        user=UserResponse.model_validate(user),
+    )
+
+
+@api_router.get("/auth/me", response_model=UserResponse)
+async def get_me(current_user: User = Depends(get_current_user)):
+    return UserResponse.model_validate(current_user)
+
+# ==============================
+# ROADMAP
+# ==============================
+
+@api_router.post("/roadmap")
+async def create_roadmap(
+    roadmap_data: RoadmapCreate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    roadmap_structure = await generate_ai_roadmap(
+        roadmap_data.topic,
+        roadmap_data.time,
+        roadmap_data.knowledge_level,
+    )
+
+    new_roadmap = Roadmap(
+        user_id=current_user.id,
+        topic=roadmap_data.topic,
+        time=roadmap_data.time,
+        knowledge_level=roadmap_data.knowledge_level,
+        roadmap_data=roadmap_structure,
+    )
+
+    db.add(new_roadmap)
+    await db.commit()
+    await db.refresh(new_roadmap)
+
+    return roadmap_structure
+
+
+@api_router.get("/roadmap/{topic}")
+async def get_roadmap_by_topic(
+    topic: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(Roadmap).filter(
+            and_(Roadmap.user_id == current_user.id, Roadmap.topic == topic)
+        )
+    )
+    roadmap = result.scalars().first()
+
+    if not roadmap:
+        raise HTTPException(status_code=404, detail="Roadmap not found")
+
+    return roadmap.roadmap_data
+
+# ==============================
+# GENERATE RESOURCES
+# ==============================
+
+@api_router.post("/generate-resources")
+async def generate_resources(data: dict):
+    try:
+        client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+
+        prompt = f"""
+Generate detailed study resources in markdown format.
+
+Course: {data.get("course")}
+Topic Description: {data.get("description")}
+Time Allocation: {data.get("time")}
+
+Include:
+- Learning explanation
+- Recommended YouTube topics
+- Practice platforms
+- Mini project idea
+"""
+
+        response = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": prompt}],
+        )
+
+        return {"resources": response.choices[0].message.content.strip()}
+
+    except Exception:
+        return {
+            "resources": """
+### Study Resources
+
+- 📘 Read official documentation
+- 🎥 Watch structured tutorials
+- 💻 Practice exercises
+- 🚀 Build small mini projects
+"""
         }
-      );
 
-      setResources(response.data.resources);
-    } catch (error) {
-      console.error("Failed to generate resources", error);
-      alert("Failed to generate resources");
-    } finally {
-      setLoadingResources(false);
+# ==============================
+# QUIZ GENERATION
+# ==============================
+
+@api_router.post("/quiz")
+async def generate_quiz(data: dict):
+    try:
+        client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+
+        prompt = f"""
+Generate 5 multiple choice questions.
+
+Topic: {data.get("topic")}
+
+Return ONLY valid JSON in this format:
+
+[
+  {{
+    "question": "...",
+    "options": ["A", "B", "C", "D"],
+    "answer": "correct option"
+  }}
+]
+"""
+
+        response = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": prompt}],
+        )
+
+        content = response.choices[0].message.content.strip()
+
+        if content.startswith("```"):
+            content = content.replace("```json", "").replace("```", "").strip()
+
+        return json.loads(content)
+
+    except Exception:
+        return [
+            {
+                "question": "What is an algorithm?",
+                "options": [
+                    "Step-by-step procedure",
+                    "Database",
+                    "Framework",
+                    "Compiler"
+                ],
+                "answer": "Step-by-step procedure"
+            }
+        ]
+
+# ==============================
+# AI ROADMAP GENERATION
+# ==============================
+
+async def generate_ai_roadmap(topic, time, level):
+    try:
+        client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+
+        prompt = f"""
+Generate a COMPLETE learning roadmap.
+
+Topic: {topic}
+Level: {level}
+Duration: {time}
+
+IMPORTANT:
+- Generate AT LEAST 4 weeks
+- Each week must contain 3 to 5 subtopics
+- Each subtopic must include description and time
+- Return ONLY valid JSON
+
+Format:
+{{
+  "title": "...",
+  "duration": "...",
+  "weeks": [
+    {{
+      "week": 1,
+      "topic": "...",
+      "subtopics": [
+        {{
+          "subtopic": "...",
+          "description": "...",
+          "time": "2 hours"
+        }}
+      ]
+    }}
+  ]
+}}
+"""
+
+        response = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": prompt}],
+        )
+
+        content = response.choices[0].message.content.strip()
+
+        if content.startswith("```"):
+            content = content.replace("```json", "").replace("```", "").strip()
+
+        data = json.loads(content)
+
+        # Normalize for frontend
+        roadmap_dict = {}
+
+        for week in data.get("weeks", []):
+            roadmap_dict[f"Week {week['week']}"] = {
+                "topic": week.get("topic"),
+                "subtopics": week.get("subtopics", []),
+            }
+
+        return roadmap_dict
+
+    except Exception:
+        return {
+            "Week 1": {
+                "topic": "Introduction",
+                "subtopics": [
+                    {
+                        "subtopic": "Basics",
+                        "description": "Learn the fundamentals",
+                        "time": "2 hours"
+                    }
+                ]
+            }
+        }
+
+# ==============================
+# HEALTH
+# ==============================
+
+@api_router.get("/health")
+async def health():
+    return {
+        "status": "healthy",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
     }
-  };
 
-  if (loading || !roadmapData) {
-    return (
-      <div className="flex items-center justify-center min-h-screen">
-        Loading...
-      </div>
-    );
-  }
+app.include_router(api_router)
 
-  const weekKeys = Object.keys(roadmapData).sort((a, b) => {
-    const numA = parseInt(a.split(" ")[1]);
-    const numB = parseInt(b.split(" ")[1]);
-    return numA - numB;
-  });
-
-  return (
-    <div className="min-h-screen bg-gray-50">
-      {/* Header */}
-      <header className="bg-white shadow-sm border-b">
-        <div className="max-w-6xl mx-auto px-4 py-4 flex items-center gap-4">
-          <button
-            onClick={() => navigate("/dashboard")}
-            className="p-2 hover:bg-gray-100 rounded-lg"
-          >
-            <ChevronLeft size={24} />
-          </button>
-
-          <div>
-            <h1 className="text-2xl font-bold">{topic}</h1>
-            <p className="text-sm text-gray-600">
-              Learning Roadmap
-            </p>
-          </div>
-        </div>
-      </header>
-
-      {/* Weeks */}
-      <div className="max-w-6xl mx-auto px-4 py-8 space-y-6">
-        {weekKeys.map((weekKey, weekIndex) => {
-          const week = roadmapData[weekKey];
-
-          return (
-            <div
-              key={weekKey}
-              className="bg-white rounded-xl shadow-md overflow-hidden"
-            >
-              <button
-                onClick={() => toggleWeek(weekKey)}
-                className="w-full p-6 flex justify-between items-center"
-                style={{
-                  borderLeft:
-                    "6px solid " + colors[weekIndex % colors.length],
-                }}
-              >
-                <div className="text-left">
-                  <h3 className="text-lg font-medium text-gray-600">
-                    {weekKey}
-                  </h3>
-                  <h2 className="text-xl font-bold">
-                    {week.topic}
-                  </h2>
-                </div>
-
-                <ChevronRight
-                  size={28}
-                  className={
-                    openWeeks[weekKey]
-                      ? "rotate-90 transition-transform"
-                      : ""
-                  }
-                />
-              </button>
-
-              {openWeeks[weekKey] && (
-                <div className="border-t divide-y">
-                  {(week.subtopics || []).map(
-                    (subtopic, index) => (
-                      <div
-                        key={index}
-                        className="p-6 hover:bg-gray-50"
-                      >
-                        <h3 className="font-bold text-lg mb-2">
-                          {index + 1}. {subtopic.subtopic}
-                        </h3>
-
-                        <div className="flex items-center gap-2 text-sm text-gray-600 mb-2">
-                          <Clock size={16} />
-                          {subtopic.time}
-                        </div>
-
-                        <p className="text-gray-700 mb-4">
-                          {subtopic.description}
-                        </p>
-
-                        <button
-                          onClick={() =>
-                            openResources(subtopic)
-                          }
-                          className="px-4 py-2 bg-blue-100 text-blue-700 rounded-lg"
-                        >
-                          <Book size={16} className="inline mr-2" />
-                          Resources
-                        </button>
-                      </div>
-                    )
-                  )}
-                </div>
-              )}
-            </div>
-          );
-        })}
-      </div>
-
-      {/* Resources Modal */}
-      {showResourceModal && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-xl max-w-3xl w-full max-h-[80vh] overflow-y-auto">
-            <div className="p-6 border-b flex justify-between">
-              <h2 className="font-bold text-lg">
-                {currentSubtopic?.subtopic}
-              </h2>
-              <button
-                onClick={() => setShowResourceModal(false)}
-                className="text-xl"
-              >
-                ×
-              </button>
-            </div>
-
-            <div className="p-6">
-              {!resources ? (
-                <button
-                  onClick={generateResources}
-                  disabled={loadingResources}
-                  className="px-6 py-3 bg-purple-600 text-white rounded-lg"
-                >
-                  {loadingResources
-                    ? "Generating..."
-                    : "Generate AI Resources"}
-                </button>
-              ) : (
-                <div className="prose">
-                  <Markdown>{resources}</Markdown>
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-};
-
-export default RoadmapPage;
+if __name__ == "__main__":
+    import uvicorn
+    port = int(os.getenv("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
