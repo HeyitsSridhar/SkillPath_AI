@@ -186,7 +186,7 @@ async def get_quiz_stats(
         for s in stats
     ]
 
-# ===================== DASHBOARD =====================
+# ===================== DASHBOARD (FIXED WITH PROGRESS) =====================
 
 @api_router.get("/dashboard/stats")
 async def dashboard_stats(
@@ -201,10 +201,41 @@ async def dashboard_stats(
         select(func.count()).select_from(QuizStat).filter(QuizStat.user_id == current_user.id)
     )
 
+    result = await db.execute(
+        select(Roadmap).filter(Roadmap.user_id == current_user.id)
+    )
+    roadmaps = result.scalars().all()
+
+    progress = {}
+
+    for rm in roadmaps:
+        topic = rm.topic
+        roadmap_data = rm.roadmap_data or {}
+
+        total = 0
+
+        for week_key, week_value in roadmap_data.items():
+            subtopics = week_value.get("subtopics", [])
+            total += len(subtopics)
+
+        quiz_result = await db.execute(
+            select(QuizStat).filter(
+                QuizStat.user_id == current_user.id,
+                QuizStat.topic == topic
+            )
+        )
+        completed = len(quiz_result.scalars().all())
+
+        progress[topic] = {
+            "total": total,
+            "completed": completed
+        }
+
     return {
         "total_courses": roadmap_count or 0,
         "completed_quizzes": quiz_count or 0,
-        "hardness_index": current_user.hardness_index
+        "hardness_index": current_user.hardness_index,
+        "progress": progress
     }
 
 # ===================== ADMIN =====================
