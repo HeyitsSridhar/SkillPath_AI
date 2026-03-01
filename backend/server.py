@@ -1,7 +1,7 @@
 from fastapi import FastAPI, APIRouter, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_, func
+from sqlalchemy import select, and_
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
@@ -10,7 +10,7 @@ import os
 import json
 
 from database import get_db, init_db, engine
-from models import User, Roadmap, QuizStat
+from models import User, Roadmap
 from schemas import *
 from auth import *
 
@@ -172,8 +172,8 @@ async def generate_resources(data: dict):
 
 - 📘 Read official documentation
 - 🎥 Watch YouTube tutorials
-- 🧠 Practice coding problems
-- 💻 Build mini projects
+- 🧠 Practice problems
+- 💻 Build small projects
 """
         }
 
@@ -235,7 +235,25 @@ async def generate_ai_roadmap(topic, time, level):
 
         prompt = f"""
         Generate structured roadmap JSON for {topic} at {level} level for {time}.
-        Return ONLY valid JSON.
+
+        Format:
+        {{
+          "title": "...",
+          "duration": "...",
+          "weeks": [
+            {{
+              "week": 1,
+              "topic": "...",
+              "subtopics": [
+                {{
+                  "subtopic": "...",
+                  "description": "...",
+                  "time": "..."
+                }}
+              ]
+            }}
+          ]
+        }}
         """
 
         response = client.chat.completions.create(
@@ -248,7 +266,18 @@ async def generate_ai_roadmap(topic, time, level):
         if content.startswith("```"):
             content = content.replace("```json", "").replace("```", "").strip()
 
-        return json.loads(content)
+        data = json.loads(content)
+
+        # 🔥 Normalize structure for frontend
+        roadmap_dict = {}
+
+        for week in data.get("weeks", []):
+            roadmap_dict[f"Week {week['week']}"] = {
+                "topic": week.get("topic"),
+                "subtopics": week.get("subtopics", []),
+            }
+
+        return roadmap_dict
 
     except Exception:
         return {
@@ -279,6 +308,5 @@ app.include_router(api_router)
 
 if __name__ == "__main__":
     import uvicorn
-
     port = int(os.getenv("PORT", 8000))
     uvicorn.run(app, host="0.0.0.0", port=port)
