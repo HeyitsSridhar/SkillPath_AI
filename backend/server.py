@@ -2,12 +2,12 @@ from fastapi import FastAPI, APIRouter, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_, func
-import os
-import json
-from datetime import timedelta, datetime, timezone
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
 from groq import Groq
+import os
+import json
 
 from database import get_db, init_db, engine
 from models import User, Roadmap, QuizStat
@@ -52,7 +52,7 @@ async def register(user_data: UserCreate, db: AsyncSession = Depends(get_db)):
         full_name=user_data.full_name,
         hashed_password=get_password_hash(user_data.password),
         role=user_data.role,
-        is_active=True
+        is_active=True,
     )
 
     db.add(new_user)
@@ -101,6 +101,184 @@ async def get_me(current_user: User = Depends(get_current_user)):
 async def create_roadmap(
     roadmap_data: RoadmapCreate,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
-    roadmap_structure = await
+    roadmap_structure = await generate_ai_roadmap(
+        roadmap_data.topic,
+        roadmap_data.time,
+        roadmap_data.knowledge_level,
+    )
+
+    new_roadmap = Roadmap(
+        user_id=current_user.id,
+        topic=roadmap_data.topic,
+        time=roadmap_data.time,
+        knowledge_level=roadmap_data.knowledge_level,
+        roadmap_data=roadmap_structure,
+    )
+
+    db.add(new_roadmap)
+    await db.commit()
+    await db.refresh(new_roadmap)
+
+    return roadmap_structure
+
+
+@api_router.get("/roadmap/{topic}")
+async def get_roadmap_by_topic(
+    topic: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(Roadmap).filter(
+            and_(Roadmap.user_id == current_user.id, Roadmap.topic == topic)
+        )
+    )
+    roadmap = result.scalars().first()
+
+    if not roadmap:
+        raise HTTPException(status_code=404, detail="Roadmap not found")
+
+    return roadmap.roadmap_data
+
+
+# ===================== GENERATE RESOURCES =====================
+
+@api_router.post("/generate-resources")
+async def generate_resources(data: dict):
+    try:
+        client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+
+        prompt = f"""
+        Generate study resources in markdown format for:
+        Course: {data.get("course")}
+        Description: {data.get("description")}
+        Time: {data.get("time")}
+        """
+
+        response = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": prompt}],
+        )
+
+        content = response.choices[0].message.content.strip()
+        return {"resources": content}
+
+    except Exception:
+        return {
+            "resources": """
+### Study Resources
+
+- 📘 Read official documentation
+- 🎥 Watch YouTube tutorials
+- 🧠 Practice coding problems
+- 💻 Build mini projects
+"""
+        }
+
+
+# ===================== QUIZ =====================
+
+@api_router.post("/quiz")
+async def generate_quiz(data: dict):
+    try:
+        client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+
+        prompt = f"""
+        Generate 5 MCQ questions in JSON format for:
+        Course: {data.get("course")}
+        Topic: {data.get("topic")}
+
+        Format:
+        [
+          {{
+            "question": "...",
+            "options": ["A","B","C","D"],
+            "answer": "correct option"
+          }}
+        ]
+        """
+
+        response = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": prompt}],
+        )
+
+        content = response.choices[0].message.content.strip()
+
+        if content.startswith("```"):
+            content = content.replace("```json", "").replace("```", "").strip()
+
+        return json.loads(content)
+
+    except Exception:
+        return [
+            {
+                "question": "What is an array?",
+                "options": [
+                    "Collection of elements",
+                    "Database",
+                    "Loop",
+                    "Sorting algorithm",
+                ],
+                "answer": "Collection of elements",
+            }
+        ]
+
+
+# ===================== AI ROADMAP =====================
+
+async def generate_ai_roadmap(topic, time, level):
+    try:
+        client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+
+        prompt = f"""
+        Generate structured roadmap JSON for {topic} at {level} level for {time}.
+        Return ONLY valid JSON.
+        """
+
+        response = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": prompt}],
+        )
+
+        content = response.choices[0].message.content.strip()
+
+        if content.startswith("```"):
+            content = content.replace("```json", "").replace("```", "").strip()
+
+        return json.loads(content)
+
+    except Exception:
+        return {
+            "Week 1": {
+                "topic": "Introduction",
+                "subtopics": [
+                    {
+                        "subtopic": "Basics",
+                        "description": "Learn fundamentals",
+                        "time": "2 hours",
+                    }
+                ],
+            }
+        }
+
+
+# ===================== HEALTH =====================
+
+@api_router.get("/health")
+async def health():
+    return {
+        "status": "healthy",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+app.include_router(api_router)
+
+if __name__ == "__main__":
+    import uvicorn
+
+    port = int(os.getenv("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
