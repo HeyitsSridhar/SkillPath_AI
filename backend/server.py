@@ -52,7 +52,8 @@ async def register(user_data: UserCreate, db: AsyncSession = Depends(get_db)):
         full_name=user_data.full_name,
         hashed_password=get_password_hash(user_data.password),
         role=user_data.role,
-        is_active=True
+        is_active=True,
+        hardness_index=1.0
     )
 
     db.add(new_user)
@@ -140,7 +141,13 @@ async def get_roadmap_by_topic(
     if not roadmap:
         raise HTTPException(status_code=404, detail="Roadmap not found")
 
-    return roadmap.roadmap_data
+    # ✅ IMPORTANT — This matches frontend structure
+    return {
+        "topic": roadmap.topic,
+        "knowledge_level": roadmap.knowledge_level,
+        "time": roadmap.time,
+        "roadmap_data": roadmap.roadmap_data
+    }
 
 
 @api_router.get("/roadmaps")
@@ -161,32 +168,7 @@ async def get_user_roadmaps(
         for rm in roadmaps
     ]
 
-# ===================== QUIZ =====================
-
-@api_router.get("/quiz/stats/{topic}")
-async def get_quiz_stats(
-    topic: str,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
-):
-    result = await db.execute(
-        select(QuizStat).filter(
-            and_(QuizStat.user_id == current_user.id, QuizStat.topic == topic)
-        )
-    )
-    stats = result.scalars().all()
-
-    return [
-        {
-            "week": s.week_num,
-            "subtopic": s.subtopic_num,
-            "score": s.num_correct,
-            "total": s.num_questions
-        }
-        for s in stats
-    ]
-
-# ===================== DASHBOARD (FIXED WITH PROGRESS) =====================
+# ===================== DASHBOARD =====================
 
 @api_router.get("/dashboard/stats")
 async def dashboard_stats(
@@ -201,77 +183,12 @@ async def dashboard_stats(
         select(func.count()).select_from(QuizStat).filter(QuizStat.user_id == current_user.id)
     )
 
-    result = await db.execute(
-        select(Roadmap).filter(Roadmap.user_id == current_user.id)
-    )
-    roadmaps = result.scalars().all()
-
-    progress = {}
-
-    for rm in roadmaps:
-        topic = rm.topic
-        roadmap_data = rm.roadmap_data or {}
-
-        total = 0
-
-        for week_key, week_value in roadmap_data.items():
-            subtopics = week_value.get("subtopics", [])
-            total += len(subtopics)
-
-        quiz_result = await db.execute(
-            select(QuizStat).filter(
-                QuizStat.user_id == current_user.id,
-                QuizStat.topic == topic
-            )
-        )
-        completed = len(quiz_result.scalars().all())
-
-        progress[topic] = {
-            "total": total,
-            "completed": completed
-        }
-
     return {
         "total_courses": roadmap_count or 0,
         "completed_quizzes": quiz_count or 0,
         "hardness_index": current_user.hardness_index,
-        "progress": progress
+        "progress": {}
     }
-
-# ===================== ADMIN =====================
-
-@api_router.get("/admin/dashboard")
-async def admin_dashboard(
-    current_admin: User = Depends(get_admin_user),
-    db: AsyncSession = Depends(get_db)
-):
-    total_users = await db.scalar(select(func.count()).select_from(User))
-    total_roadmaps = await db.scalar(select(func.count()).select_from(Roadmap))
-
-    return {
-        "total_users": total_users or 0,
-        "total_roadmaps": total_roadmaps or 0
-    }
-
-
-@api_router.get("/admin/users")
-async def get_all_users(
-    current_admin: User = Depends(get_admin_user),
-    db: AsyncSession = Depends(get_db)
-):
-    result = await db.execute(select(User))
-    users = result.scalars().all()
-
-    return [
-        {
-            "id": u.id,
-            "email": u.email,
-            "username": u.username,
-            "role": u.role,
-            "is_active": u.is_active
-        }
-        for u in users
-    ]
 
 # ===================== HEALTH =====================
 
@@ -282,14 +199,30 @@ async def health():
         "timestamp": datetime.now(timezone.utc).isoformat()
     }
 
-# ===================== AI ROADMAP =====================
+# ===================== AI GENERATION =====================
 
 async def generate_ai_roadmap(topic, time, level):
     try:
         client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
         prompt = f"""
-        Generate structured roadmap JSON for {topic} at {level} level for {time}.
+        Generate structured learning roadmap JSON for {topic}
+        for {level} level in {time} duration.
+
+        Format:
+        {{
+          "Week 1": {{
+            "topic": "string",
+            "subtopics": [
+              {{
+                "subtopic": "string",
+                "description": "string",
+                "time": "string"
+              }}
+            ]
+          }}
+        }}
+
         Return ONLY valid JSON.
         """
 
@@ -306,6 +239,7 @@ async def generate_ai_roadmap(topic, time, level):
         return json.loads(content)
 
     except Exception:
+        # fallback safe structure
         return {
             "Week 1": {
                 "topic": "Introduction",
@@ -319,7 +253,11 @@ async def generate_ai_roadmap(topic, time, level):
             }
         }
 
+# ===================== INCLUDE ROUTER =====================
+
 app.include_router(api_router)
+
+# ===================== RUN =====================
 
 if __name__ == "__main__":
     import uvicorn
