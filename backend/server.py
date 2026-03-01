@@ -41,9 +41,8 @@ app = FastAPI(title="SkillPath AI", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[],  # empty when using regex
-    allow_origin_regex=r"https://.*\.vercel\.app",
-    allow_credentials=True,
+    allow_origins=["*"],   # TEMPORARY - allow everything
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
